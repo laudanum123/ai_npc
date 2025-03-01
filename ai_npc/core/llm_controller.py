@@ -8,6 +8,8 @@ import json
 import time
 import random
 import re
+import threading
+import queue
 from dotenv import load_dotenv
 from ai_npc.config.settings import LLM_API_TIMEOUT, LLM_MAX_TOKENS
 
@@ -83,10 +85,89 @@ class LLMController:
                 }
             }
         ]
+
+        # Queue system for non-blocking NPC updates
+        self.request_queue = queue.Queue()
+        self.response_cache = {}  # Store responses by NPC ID
+        self.processing_thread = None
+        self.is_processing = False
+        self.start_queue_processing()
+    
+    def start_queue_processing(self):
+        """Start the background thread to process the request queue."""
+        if self.processing_thread is None or not self.processing_thread.is_alive():
+            self.is_processing = True
+            self.processing_thread = threading.Thread(target=self._process_queue, daemon=True)
+            self.processing_thread.start()
+    
+    def _process_queue(self):
+        """Process the request queue in the background."""
+        while self.is_processing:
+            try:
+                # Try to get a request from the queue with a timeout
+                # This allows the thread to check is_processing periodically
+                npc_id, query, callback = self.request_queue.get(timeout=0.5)
+                
+                # Process the request
+                try:
+                    if self.use_mock:
+                        response = self._get_mock_response(query)
+                    else:
+                        response = self._get_openai_response(query)
+                    
+                    # Cache the response
+                    self.response_cache[npc_id] = response
+                    
+                    # Call the callback function if provided
+                    if callback:
+                        callback(response)
+                        
+                except Exception as e:
+                    print(f"Error processing request for NPC {npc_id}: {e}")
+                    # Use mock response as fallback
+                    response = self._get_mock_response(query)
+                    self.response_cache[npc_id] = response
+                    if callback:
+                        callback(response)
+                
+                # Mark this task as done
+                self.request_queue.task_done()
+                
+                # Add a small delay to prevent flooding the API
+                time.sleep(0.1)
+                
+            except queue.Empty:
+                # Queue was empty, just continue the loop
+                pass
+            except Exception as e:
+                print(f"Error in queue processing thread: {e}")
+    
+    def stop_queue_processing(self):
+        """Stop the background thread processing the queue."""
+        self.is_processing = False
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.processing_thread.join(timeout=1.0)
+    
+    def queue_npc_task_request(self, npc_id, query, callback=None):
+        """
+        Queue a request for an NPC task update.
+        
+        Args:
+            npc_id (str): The ID of the NPC
+            query (dict): The query containing NPC state and context
+            callback (function, optional): A function to call with the response when done
+        """
+        # Add to the queue
+        self.request_queue.put((npc_id, query, callback))
+        
+        # Make sure processing thread is running
+        self.start_queue_processing()
     
     def get_npc_task(self, query):
         """
         Get a new task for an NPC based on the query.
+        This is the synchronous version that blocks until a response is received.
+        Consider using queue_npc_task_request for non-blocking operation.
         
         Args:
             query (dict): The query containing NPC state and context
@@ -102,6 +183,31 @@ class LLMController:
         except Exception as e:
             print(f"Error calling OpenAI API: {e}")
             return self._get_mock_response(query)
+    
+    def get_cached_response(self, npc_id):
+        """
+        Get a cached response for an NPC if available.
+        
+        Args:
+            npc_id (str): The ID of the NPC
+            
+        Returns:
+            dict or None: The cached response, or None if no cache exists
+        """
+        return self.response_cache.get(npc_id)
+    
+    def clear_cache(self, npc_id=None):
+        """
+        Clear the response cache for a specific NPC or all NPCs.
+        
+        Args:
+            npc_id (str, optional): The ID of the NPC to clear cache for. If None, clears all cache.
+        """
+        if npc_id:
+            if npc_id in self.response_cache:
+                del self.response_cache[npc_id]
+        else:
+            self.response_cache.clear()
     
     def _get_openai_response(self, query):
         """Send a query to the OpenAI API and get a response."""
@@ -203,8 +309,8 @@ class LLMController:
     
     def _get_mock_response(self, query):
         """Generate a mock response when the API is not available."""
-        # Simulate API latency
-        time.sleep(0.2)
+        # Simulate API latency (reduced for better responsiveness)
+        time.sleep(0.05)
         
         # Define the available tasks for each NPC type
         available_tasks = {
@@ -264,4 +370,8 @@ class LLMController:
         # Choose a random task from the options
         new_task = random.choice(task_options)
         
-        return {"new_task": new_task} 
+        return {"new_task": new_task}
+        
+    def __del__(self):
+        """Clean up resources when the controller is destroyed."""
+        self.stop_queue_processing() 

@@ -36,6 +36,7 @@ class NPC:
         # LLM update timing
         self.last_llm_update = time.time() * 1000  # Current time in milliseconds
         self.llm_controller = LLMController()
+        self.waiting_for_task = False  # Flag to track if we're waiting for an LLM response
         
         # Font for displaying name
         self.font = pygame.font.SysFont('Arial', 12)
@@ -44,16 +45,28 @@ class NPC:
         """Update the NPC's state and position."""
         current_time = time.time() * 1000
         
-        # Check if it's time to update the NPC's task via LLM
-        if current_time - self.last_llm_update >= NPC_UPDATE_INTERVAL:
-            self.update_task_from_llm(player, world)
+        # Check if we have a cached response from the LLM
+        cached_response = self.llm_controller.get_cached_response(self.npc_id)
+        if cached_response and self.waiting_for_task:
+            # Process the response
+            if "new_task" in cached_response:
+                self.current_task = cached_response["new_task"]
+                print(f"NPC {self.npc_id} received new task: {self.current_task}")
+            
+            # Clear the cache and reset the waiting flag
+            self.llm_controller.clear_cache(self.npc_id)
+            self.waiting_for_task = False
             self.last_llm_update = current_time
+        
+        # Check if it's time to update the NPC's task via LLM
+        elif not self.waiting_for_task and current_time - self.last_llm_update >= NPC_UPDATE_INTERVAL:
+            self.queue_task_update(player, world)
         
         # Execute the current task
         self.execute_task(player, world)
     
-    def update_task_from_llm(self, player, world):
-        """Get a new task from the LLM controller."""
+    def queue_task_update(self, player, world):
+        """Queue a task update request to the LLM controller."""
         environment_context = self.get_environment_context(world)
         player_interaction = self.get_player_interaction(player)
         
@@ -68,7 +81,36 @@ class NPC:
             "player_interaction": player_interaction
         }
         
-        # Get the response from the LLM
+        # Queue the request
+        self.llm_controller.queue_npc_task_request(self.npc_id, query, self.task_update_callback)
+        self.waiting_for_task = True
+    
+    def task_update_callback(self, response):
+        """Callback function for when a task update response is received."""
+        # This is called by the LLM controller's processing thread
+        # The response is automatically cached, and we'll process it in the update method
+        pass
+    
+    def update_task_from_llm(self, player, world):
+        """
+        Synchronous version of task update (for backwards compatibility).
+        This is a blocking call and should be avoided in favor of queue_task_update.
+        """
+        environment_context = self.get_environment_context(world)
+        player_interaction = self.get_player_interaction(player)
+        
+        # Prepare the query for the LLM
+        query = {
+            "npc_id": self.npc_id,
+            "npc_type": self.npc_type,
+            "current_task": self.current_task,
+            "last_completed_task": self.last_completed_task,
+            "current_state": self.current_state,
+            "environment_context": environment_context,
+            "player_interaction": player_interaction
+        }
+        
+        # Get the response from the LLM (blocking call)
         response = self.llm_controller.get_npc_task(query)
         
         # Update the NPC's task based on the LLM response
@@ -378,4 +420,9 @@ class NPC:
         # Draw the NPC's name above it
         name_text = self.font.render(f"{self.npc_id}: {self.current_task}", True, (255, 255, 255))
         name_rect = name_text.get_rect(center=(self.rect.centerx, self.rect.top - 10))
-        surface.blit(name_text, name_rect) 
+        surface.blit(name_text, name_rect)
+        
+        # Indicate if waiting for a task update
+        if self.waiting_for_task:
+            # Draw a small indicator (e.g., a dot) to show the NPC is waiting for a task update
+            pygame.draw.circle(surface, (255, 255, 0), (self.rect.right + 5, self.rect.top), 3) 

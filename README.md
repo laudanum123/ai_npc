@@ -12,6 +12,7 @@ In this game, NPCs receive high-level action commands (e.g., "Patrol the village
 - **Autonomous Task Execution**: NPCs continue executing tasks independently
 - **Dynamic Behavior**: NPCs adapt based on the environment and player interactions
 - **Emergent Storytelling**: Create unpredictable, dynamic narratives through NPC behaviors
+- **Non-Blocking AI Processing**: LLM requests are processed asynchronously, preventing game freezes
 
 ## Requirements
 
@@ -57,6 +58,16 @@ Controls:
 - **W/A/S/D or Arrow Keys**: Move the player
 - **ESC**: Quit the game
 
+## Testing Non-Blocking LLM Updates
+
+You can test the non-blocking LLM update system with:
+
+```
+python -m ai_npc.tests.test_non_blocking
+```
+
+This test creates multiple NPCs and simulates them requesting tasks simultaneously to verify that the game doesn't freeze during LLM queries.
+
 ## Development
 
 ### Project Structure
@@ -70,10 +81,24 @@ Controls:
   - `config/`: Configuration files
     - `settings.py`: Game settings and parameters
   - `assets/`: Game assets (graphics, audio, etc.)
+  - `tests/`: Test modules
+    - `test_non_blocking.py`: Test for non-blocking LLM updates
 
 ## LLM Integration
 
 The game integrates with language models (like OpenAI's GPT) to control NPC behavior. If an API key is not available, the game will fall back to mock LLM responses.
+
+### Non-Blocking LLM Updates
+
+To prevent the game from freezing when multiple NPCs request new tasks from the LLM, we've implemented a non-blocking queuing system:
+
+1. NPCs request task updates asynchronously
+2. Requests are placed in a queue and processed in the background
+3. NPCs continue their current tasks while waiting for new instructions
+4. Visual indicators show when an NPC is waiting for a new task
+5. Only one NPC communicates with the LLM at a time, preventing API throttling
+
+This ensures smooth gameplay even with many NPCs requiring frequent updates from the LLM.
 
 ### Communication Protocol
 
