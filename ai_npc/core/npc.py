@@ -80,7 +80,42 @@ class NPC:
         """Execute the current task."""
         task_lower = self.current_task.lower()
         
-        # Check for common task patterns and execute the appropriate behavior
+        # Handle task descriptions that might have a colon (function call format)
+        if ":" in task_lower:
+            base_task, description = task_lower.split(":", 1)
+            task_lower = base_task.strip()
+        
+        # Check for function-style task names (with underscores)
+        if "follow_player" in task_lower:
+            self.follow_player(player)
+            return
+        elif "guard_position" in task_lower:
+            self.guard_position()
+            return
+        elif "tend_crops" in task_lower:
+            self.tend_crops(world)
+            return
+        elif "rest_at_home" in task_lower:
+            self.rest_at_home(world)
+            return
+        elif "talk_to_others" in task_lower:
+            self.talk_to_others(world)
+            return
+        elif "inspect_surroundings" in task_lower:
+            self.inspect_surroundings(world)
+            return
+        elif "sell_wares" in task_lower:
+            self.sell_wares(world)
+            return
+        elif "manage_inventory" in task_lower:
+            self.manage_inventory(world)
+            return
+        elif "greet_nearby" in task_lower:
+            self.greet_nearby(player, world)
+            return
+        
+        # Check for common task patterns as before, for backward compatibility
+        # and for handling more natural language descriptions
         
         # Movement patterns
         if "patrol" in task_lower:

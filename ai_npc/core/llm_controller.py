@@ -33,6 +33,56 @@ class LLMController:
             except ImportError:
                 print("Error: OpenAI library not installed. Using mock LLM responses.")
                 self.use_mock = True
+                
+        # Define the available NPC action tools/functions
+        self.npc_action_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "assign_task_to_npc",
+                    "description": "Assign a task to an NPC based on their type, state, and environment",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "npc_id": {
+                                "type": "string",
+                                "description": "The ID of the NPC"
+                            },
+                            "task": {
+                                "type": "string",
+                                "description": "The task to assign to the NPC",
+                                "enum": [
+                                    # Common tasks for all NPCs
+                                    "patrol", 
+                                    "follow_player", 
+                                    "guard_position", 
+                                    "wander", 
+                                    "idle",
+                                    "greet_nearby",
+                                    
+                                    # Villager-specific tasks
+                                    "tend_crops",
+                                    "rest_at_home",
+                                    "talk_to_others",
+                                    
+                                    # Guard-specific tasks
+                                    "inspect_surroundings",
+                                    
+                                    # Merchant-specific tasks
+                                    "sell_wares",
+                                    "manage_inventory"
+                                ]
+                            },
+                            "task_description": {
+                                "type": "string",
+                                "description": "A short description of how the NPC should perform the task"
+                            }
+                        },
+                        "required": ["npc_id", "task"]
+                    }
+                }
+            }
+        ]
     
     def get_npc_task(self, query):
         """
@@ -60,15 +110,29 @@ class LLMController:
         You are an AI controlling NPCs in a video game. Your job is to give NPCs appropriate tasks
         based on their current state and environment.
         
-        Tasks should be short, clear instructions like "Patrol the village", "Find food", 
-        "Trade with villagers", "Follow the player", etc.
+        Each NPC type has specific tasks they can perform:
         
-        IMPORTANT: Your response MUST be a valid JSON object with ONLY a 'new_task' field containing 
-        the task instruction. Example response:
-        {"new_task": "Patrol the village"}
+        ALL NPCs can:
+        - patrol: Move between different points in the area
+        - follow_player: Follow the player character at a distance
+        - guard_position: Stay in one place, possibly making small movements to look around
+        - wander: Move randomly around the world
+        - idle: Stay still and do nothing
+        - greet_nearby: Greet nearby entities, especially the player
         
-        Do not include any explanations, markdown formatting, or backticks in your response.
-        Return ONLY the JSON object.
+        VILLAGERS can also:
+        - tend_crops: Find fields (represented by trees) and work there
+        - rest_at_home: Find a house to rest in
+        - talk_to_others: Find other NPCs to talk to
+        
+        GUARDS can also:
+        - inspect_surroundings: Move to and check different objects and NPCs in the area
+        
+        MERCHANTS can also:
+        - sell_wares: Find a good spot to sell items, often near houses or other NPCs
+        - manage_inventory: Stay in one place and manage their inventory
+        
+        Use the function to assign an appropriate task based on the NPC's type, current state, and environment.
         """
         
         # Convert query to a user message
@@ -82,67 +146,58 @@ class LLMController:
         - Environment: {query['environment_context']}
         - Player interaction: {query['player_interaction']}
         
-        Based on this information, what should the NPC do next?
-        Remember to respond ONLY with a valid JSON object containing the 'new_task' field.
+        Based on this information, assign a new task to the NPC using the function provided.
+        Choose a task that makes sense for this type of NPC in their current situation.
         """
         
-        # Call the OpenAI API
+        # Call the OpenAI API with function calling
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
+            tools=self.npc_action_tools,
+            tool_choice={"type": "function", "function": {"name": "assign_task_to_npc"}},
             max_tokens=LLM_MAX_TOKENS,
             temperature=0.7,
-            timeout=LLM_API_TIMEOUT,
-            response_format={"type": "json_object"}  # Request JSON format specifically
+            timeout=LLM_API_TIMEOUT
         )
         
         # Extract and parse the response
         try:
+            # Get the function call from the response
+            tool_call = response.choices[0].message.tool_calls[0]
+            if tool_call.function.name == "assign_task_to_npc":
+                # Parse the arguments as JSON
+                args = json.loads(tool_call.function.arguments)
+                task = args.get("task", "idle")
+                description = args.get("task_description", "")
+                
+                # Format a user-friendly task description from the function call
+                if description:
+                    full_task = f"{task.replace('_', ' ')}: {description}"
+                else:
+                    full_task = task.replace('_', ' ')
+                
+                return {"new_task": full_task}
+            
+            # Fallback if the function call format is unexpected
+            return {"new_task": "idle"}
+            
+        except (json.JSONDecodeError, AttributeError, IndexError) as e:
+            # Log the error and fall back to text extraction
+            print(f"Error parsing LLM function call: {e}")
+            print(f"Raw response: {response}")
+            
+            # Attempt to extract useful content from a text response if function call failed
             content = response.choices[0].message.content
-            # Remove any backticks or markdown formatting that might be present
-            content = content.strip('`')
-            if content.startswith('json'):
-                content = content[4:]  # Remove 'json' language marker if present
-            content = content.strip()
+            if content:
+                # Try different extraction methods as before
+                task_match = re.search(r'task["\s:]+([^"]+?)["\s}]', content)
+                if task_match:
+                    return {"new_task": task_match.group(1).strip()}
             
-            # Try to parse as JSON
-            parsed = json.loads(content)
-            return parsed
-        except (json.JSONDecodeError, AttributeError) as e:
-            # If the response is not valid JSON, use more robust extraction
-            print(f"Error parsing LLM response as JSON: {e}")
-            print(f"Raw content: {content}")
-            
-            # Try different extraction methods
-            
-            # Look for JSON pattern
-            json_pattern = r'{.*?"new_task".*?:.*?"(.*?)".*?}'
-            json_match = re.search(json_pattern, content, re.DOTALL)
-            if json_match:
-                return {"new_task": json_match.group(1)}
-                
-            # Look for "new_task" followed by a string
-            task_pattern = r'"new_task"["\s:]+([^"]+?)["\s}]'
-            task_match = re.search(task_pattern, content)
-            if task_match:
-                return {"new_task": task_match.group(1).strip()}
-                
-            # Simple text extraction if contains "new_task"
-            if "new_task" in content:
-                parts = content.split("new_task")
-                if len(parts) > 1:
-                    # Extract the text after "new_task", removing common delimiters
-                    task_text = parts[1].strip('":,. \n}{')
-                    return {"new_task": task_text}
-            
-            # If all else fails, extract any quoted text that might be a task
-            quoted_text = re.search(r'"([^"]+)"', content)
-            if quoted_text:
-                return {"new_task": quoted_text.group(1)}
-                
             # Last resort fallback
             return {"new_task": "idle"}
     
@@ -151,59 +206,62 @@ class LLMController:
         # Simulate API latency
         time.sleep(0.2)
         
-        # List of possible tasks based on NPC type
-        tasks = {
+        # Define the available tasks for each NPC type
+        available_tasks = {
+            "common": [
+                "patrol",
+                "follow player", 
+                "guard position", 
+                "wander",
+                "idle",
+                "greet nearby"
+            ],
             "villager": [
-                "Wander around the village",
-                "Talk to other villagers",
-                "Tend to crops in the field",
-                "Rest at home",
-                "Visit the market",
-                "Prepare food",
-                "Idle by the fountain"
+                "tend crops",
+                "rest at home",
+                "talk to others"
             ],
             "guard": [
-                "Patrol the village perimeter",
-                "Guard the town gate",
-                "Inspect suspicious activity",
-                "Stand guard at the castle",
-                "Follow the player at a distance",
-                "Check on other guards",
-                "Rest at the barracks"
+                "inspect surroundings"
             ],
             "merchant": [
-                "Sell wares at the market",
-                "Restock inventory",
-                "Advertise special deals",
-                "Negotiate with suppliers",
-                "Travel between villages",
-                "Count profits",
-                "Pack up shop for the day"
+                "sell wares",
+                "manage inventory"
             ]
         }
         
-        # Get tasks for the NPC type, or use a default list
+        # Get NPC type and prepare task list
         npc_type = query.get("npc_type", "villager")
-        available_tasks = tasks.get(npc_type, tasks["villager"])
         
-        # If the player is nearby, potentially interact with them
-        if query.get("player_interaction") == "player nearby":
-            if random.random() < 0.4:  # 40% chance to interact with nearby player
-                if npc_type == "guard":
-                    available_tasks.append("Follow the player")
-                    available_tasks.append("Watch the player carefully")
-                elif npc_type == "merchant":
-                    available_tasks.append("Offer goods to the player")
-                    available_tasks.append("Approach the player to trade")
-                else:
-                    available_tasks.append("Greet the player")
-                    available_tasks.append("Wave at the player")
+        # Start with common tasks for all NPCs
+        task_options = available_tasks["common"].copy()
+        
+        # Add type-specific tasks
+        if npc_type in available_tasks:
+            task_options.extend(available_tasks[npc_type])
+        
+        # If the player is nearby, increase chance of interactive tasks
+        if query.get("player_interaction") in ["player nearby", "player very close"]:
+            interactive_tasks = ["follow player", "greet nearby"]
+            # Add these tasks multiple times to increase their probability
+            for _ in range(3):  # Add 3 copies to increase probability
+                task_options.extend(interactive_tasks)
         
         # Choose a random task, but avoid repeating the current task if possible
         current_task = query.get("current_task")
-        if current_task in available_tasks and len(available_tasks) > 1:
-            available_tasks.remove(current_task)
+        if current_task in task_options and len(task_options) > 1:
+            # Try to remove the exact match
+            task_options.remove(current_task)
+            
+            # Also try to avoid similar tasks (e.g., if current is "patrol the village", avoid other patrol tasks)
+            current_base_task = current_task.split()[0] if " " in current_task else current_task
+            task_options = [t for t in task_options if not t.startswith(current_base_task)]
         
-        new_task = random.choice(available_tasks)
+        # If we've removed too many options, restore the common tasks
+        if not task_options:
+            task_options = available_tasks["common"]
+        
+        # Choose a random task from the options
+        new_task = random.choice(task_options)
         
         return {"new_task": new_task} 
