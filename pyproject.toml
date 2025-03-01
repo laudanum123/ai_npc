@@ -1,0 +1,11 @@
+[project]
+name = "ai-npc"
+version = "0.1.0"
+description = "A story-driven sandbox adventure game with LLM-controlled NPCs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pygame>=2.5.0",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
